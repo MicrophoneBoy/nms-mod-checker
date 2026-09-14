@@ -1,0 +1,6 @@
+# Personal files: your own settings, mod list, report and save backups
+config.json
+mods.json
+report.html
+save_backups/
+__pycache__/
