@@ -177,7 +177,8 @@ def read_manifest(game_dir):
     def get(key):
         m = re.search(rf'"{key}"\s+"([^"]*)"', text)
         return int(m.group(1)) if m and m.group(1).isdigit() else 0
-    return {'buildid': get('buildid'), 'lastupdated': get('lastupdated')}
+    # TargetBuildID differs from buildid while Steam has an update queued but not yet installed.
+    return {'buildid': get('buildid'), 'lastupdated': get('lastupdated'), 'target': get('TargetBuildID')}
 
 
 def steam_public_build():
@@ -831,6 +832,11 @@ def decide(tech, nx, duplicate_of, disabled):
         if pending:
             return 'fixed', ('The author posted a version after this game update. Download it into MODS '
                              '(with Vortex: Mod Manager Download), then delete this disabled copy.')
+        if newer:
+            # A fix posted between two game patches no longer counts as "since this game version" after the
+            # second patch, so compare against the parked copy too or the fix stays hidden forever.
+            return 'fixed', ('Nexus has a newer main file than this disabled copy, probably the fix. Download it into '
+                             'MODS (with Vortex: Mod Manager Download), launch-test it, then delete this disabled copy.')
         if tech in ('ok', 'untested'):
             return 'reenable', 'Compatible with this game version again. Move it back into MODS.'
         if tech == 'risky':
@@ -914,6 +920,7 @@ CSS = """
 body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
 main { max-width:1180px; margin:0 auto; padding-block:24px 60px; padding-inline:16px; }
 h1 { font-size:22px; margin:0 0 4px; } .sub { color:var(--muted); margin:0 0 18px; }
+.banner { border:1px solid var(--update); color:var(--update); background:var(--card); border-radius:8px; padding:10px 12px; margin:0 0 18px; font-weight:600; }
 .meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; margin-bottom:18px; }
 .meta div { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
 .meta b { display:block; font-size:12px; color:var(--muted); font-weight:600; }
@@ -1015,6 +1022,7 @@ def build_report(rows, ctx):
 <main>
 <h1>NMS Mod Check</h1>
 <p class="sub">{sub}, checked {e(m['now'])}</p>
+{f'<p class="banner">Steam has a newer game build ({m["newer_build"]}) that is not installed yet. Update No Man&#39;s Sky in Steam, then run this check again: this report is for the old build.</p>' if m.get('newer_build') else ''}
 <div class="meta">
 <div><b>Your game</b>Steam build {m['buildid']}{' (current public build)' if m['is_public'] else ''}, installed {fmt_date(m['lastupdated'])}</div>
 <div><b>This game version went live</b>{fmt_date(m['release_ts'])}. Nexus files uploaded after this count as "since this game version".</div>
@@ -1053,6 +1061,11 @@ def main():
     public = None if args.offline else steam_public_build()
     is_public = bool(public and public['buildid'] == man['buildid'])
     release_ts = public['timeupdated'] if is_public else man['lastupdated']
+    newer_build = max(public['buildid'] if public else 0, man['target'] if man['target'] != man['buildid'] else 0)
+    steam_behind = newer_build > man['buildid']
+    if steam_behind:
+        print(f'  ! Steam has a newer game build ({newer_build}) that is not installed yet. Update No Man\'s Sky in '
+              'Steam first, then run this check again: results below are for the old build.')
 
     mods = scan_mods(mods_dir)
     active = len(mods)
@@ -1132,7 +1145,8 @@ def main():
     rows.sort(key=lambda r: (ACTIONS[r['action']][0], r['folder'].lower()))
 
     ctx = {'mods_dir': mods_dir, 'now': dt.datetime.now().strftime('%Y-%m-%d %H:%M'), 'buildid': man['buildid'],
-           'lastupdated': man['lastupdated'], 'release_ts': release_ts, 'is_public': is_public, 'mbinc': mbinc}
+           'lastupdated': man['lastupdated'], 'release_ts': release_ts, 'is_public': is_public, 'mbinc': mbinc,
+           'newer_build': newer_build if steam_behind else None}
     REPORT_FILE.write_text(build_report(rows, ctx), encoding='utf-8')
     save_json(DATA / 'last_check.json', rows)
 
