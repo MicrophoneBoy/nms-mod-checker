@@ -300,6 +300,7 @@ def scan_mods(mods_dir, disabled=False):
         if not entry.is_dir():
             continue
         files = []
+        content_ts = 0
         for root, _dirs, names in os.walk(entry):
             for name in names:
                 if name == '__folder_managed_by_vortex':
@@ -307,11 +308,14 @@ def scan_mods(mods_dir, disabled=False):
                 path = Path(root) / name
                 rel = path.relative_to(entry).as_posix()
                 files.append(describe_file(path, rel))
+                content_ts = max(content_ts, path.stat().st_mtime)
         st = entry.stat()
         key = f'{DISABLED_DIR}/{entry.name}' if disabled else entry.name
         # When this copy landed on disk: a fresh extract or Vortex deploy creates the folder anew.
+        # content_ts = newest file inside; extractors keep the archive's file dates, so it is close to when the
+        # author built this version (Vortex can install an update into the old version's folder name).
         mods[key] = {'name': entry.name, 'path': entry, 'files': files, 'disabled': disabled,
-                     'mtime': st.st_mtime, 'installed_at': max(st.st_mtime, st.st_ctime)}
+                     'mtime': st.st_mtime, 'installed_at': max(st.st_mtime, st.st_ctime), 'content_ts': content_ts}
     return mods
 
 
@@ -781,7 +785,10 @@ def check_mod(mod, game, samples, fidx):
     return res
 
 
-def nexus_view(entry, info, files, release_ts, installed_at):
+CONTENT_GRACE = 6 * 3600   # authors upload a build within hours of making it
+
+
+def nexus_view(entry, info, files, release_ts, installed_at, content_ts=0):
     if not entry or not entry.get('nexus_id'):
         return None
     mid = entry['nexus_id']
@@ -792,6 +799,10 @@ def nexus_view(entry, info, files, release_ts, installed_at):
     # Your copy dates from whichever is later: the upload time of the archive it came from, or when the
     # folder was created (a Vortex install or fresh extract of a newer version creates it anew).
     have = max(entry.get('file_ts') or 0, installed_at or 0)
+    # Files built shortly before an upload belong to that upload: covers updates that Vortex installed into
+    # the old version's folder, whose names and folder dates still point at the old version.
+    if content_ts and content_ts + CONTENT_GRACE > have:
+        have = content_ts + CONTENT_GRACE
     since_patch = sorted((f for f in fl if f['date'] >= release_ts and f['category'] != 'ARCHIVED'),
                          key=lambda f: -f['date'])
     pending = [f for f in since_patch if f['category'] in ACTIVE_FILE_CATEGORIES and f['date'] > have + 60]
@@ -1120,7 +1131,7 @@ def main():
         if bad and mod['installed_at'] < dt.datetime.fromisoformat(bad['found']).timestamp() + 86400:
             tech['tech'] = 'broken'   # found broken by playing, whatever the file checks say
             tech['problems'].insert(0, f"Tested in game: {bad['note']} It stays marked broken until a newer copy is installed.")
-        nx = nexus_view(entry, info, files, release_ts, mod['installed_at'])
+        nx = nexus_view(entry, info, files, release_ts, mod['installed_at'], mod['content_ts'])
         action, advice = decide(tech['tech'], nx, duplicates.get(key), mod['disabled'])
         if not mod['files']:
             action = 'delete' if mod['disabled'] else 'remove'
